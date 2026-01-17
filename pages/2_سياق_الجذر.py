@@ -5,6 +5,27 @@ import re
 import pandas as pd
 import streamlit as st
 
+# =======================
+# إعدادات ثابتة (مخفية عن المستخدم)
+# =======================
+CSV_PATH = "quran_corrected_global.csv"
+CL1_PATH = "Cl1.xlsx"
+
+# أعمدة CSV
+COL_TASH = "3"        # الآية بالتشكيل
+COL_PLAIN = "4"       # الآية بدون تشكيل
+COL_SURAH_NO = "1"    # رقم السورة
+COL_AYAH_NO = "2"     # رقم الآية
+COL_SURAH_T = "10"    # اسم السورة بالتشكيل
+COL_SURAH_P = "11"    # اسم السورة بدون تشكيل
+
+# أعمدة Cl1.xlsx
+CL1_WORD_COL = "الكلمة"
+CL1_ROOT_COL = "الجذر"
+
+# =======================
+# أدوات لغوية
+# =======================
 ARABIC_DIACRITICS_RE = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]")
 TOKEN_RE = re.compile(r"[^\s]+")
 
@@ -25,6 +46,15 @@ def tokenize(text: str):
         return []
     return TOKEN_RE.findall(text)
 
+def safe_int(x):
+    try:
+        return int(str(x))
+    except Exception:
+        return 10**9
+
+# =======================
+# تحميل البيانات
+# =======================
 @st.cache_data(show_spinner=False)
 def load_quran_csv(path: str) -> pd.DataFrame:
     try:
@@ -33,21 +63,19 @@ def load_quran_csv(path: str) -> pd.DataFrame:
         return pd.read_csv(path, dtype=str, encoding="utf-8-sig")
 
 @st.cache_data(show_spinner=False)
-def load_lexicon_xlsx(path: str) -> pd.DataFrame:
+def load_xlsx(path: str) -> pd.DataFrame:
     return pd.read_excel(path, dtype=str)
 
 @st.cache_data(show_spinner=False)
-def build_root_maps(lex_df: pd.DataFrame, word_col: str, root_col: str):
+def build_root_maps(lex_df: pd.DataFrame):
     exact_map = {}
     norm_map = {}
 
-    df = lex_df[[word_col, root_col]].dropna().copy()
-    df[word_col] = df[word_col].astype(str).str.strip()
-    df[root_col] = df[root_col].astype(str).str.strip()
+    df = lex_df[[CL1_WORD_COL, CL1_ROOT_COL]].dropna().copy()
+    df[CL1_WORD_COL] = df[CL1_WORD_COL].astype(str).str.strip()
+    df[CL1_ROOT_COL] = df[CL1_ROOT_COL].astype(str).str.strip()
 
-    for w, r in zip(df[word_col], df[root_col]):
-        if not w or not r:
-            continue
+    for w, r in zip(df[CL1_WORD_COL], df[CL1_ROOT_COL]):
         exact_map[w] = r
         nw = normalize_arabic(w)
         if nw and nw not in norm_map:
@@ -56,49 +84,32 @@ def build_root_maps(lex_df: pd.DataFrame, word_col: str, root_col: str):
     return exact_map, norm_map
 
 @st.cache_data(show_spinner=True)
-def index_ayah_roots(df: pd.DataFrame, col_tash: str, col_plain: str, exact_map: dict, norm_map: dict):
+def index_ayah_roots(df: pd.DataFrame, exact_map: dict, norm_map: dict):
     roots_sets = []
     for _, row in df.iterrows():
-        text_t = str(row.get(col_tash, "") or "")
-        text_p = str(row.get(col_plain, "") or "")
-
-        tokens_t = tokenize(text_t)
-        tokens_p = tokenize(text_p)
+        text_t = str(row.get(COL_TASH, "") or "")
+        text_p = str(row.get(COL_PLAIN, "") or "")
 
         roots = set()
 
-        for tok in tokens_t:
-            tok = tok.strip()
-            if not tok:
-                continue
+        for tok in tokenize(text_t):
             if tok in exact_map:
                 roots.add(exact_map[tok])
-                continue
-            ntok = normalize_arabic(tok)
-            if ntok in norm_map:
-                roots.add(norm_map[ntok])
+            else:
+                nt = normalize_arabic(tok)
+                if nt in norm_map:
+                    roots.add(norm_map[nt])
 
-        for tok in tokens_p:
-            tok = tok.strip()
-            if not tok:
-                continue
-            ntok = normalize_arabic(tok)
-            if ntok in norm_map:
-                roots.add(norm_map[ntok])
+        for tok in tokenize(text_p):
+            nt = normalize_arabic(tok)
+            if nt in norm_map:
+                roots.add(norm_map[nt])
 
         roots_sets.append(roots)
 
     return roots_sets
 
-def safe_int(x):
-    try:
-        return int(str(x))
-    except Exception:
-        return 10**9
-
 def format_surah_title(display_mode: str, sur_t: str, sur_p: str) -> str:
-    sur_t = str(sur_t or "")
-    sur_p = str(sur_p or "")
     if display_mode == "بالتشكيل":
         return sur_t
     if display_mode == "بدون تشكيل":
@@ -106,74 +117,53 @@ def format_surah_title(display_mode: str, sur_t: str, sur_p: str) -> str:
     return f"{sur_t} / {sur_p}"
 
 def pick_text(display_mode: str, t: str, p: str) -> str:
-    t = str(t or "")
-    p = str(p or "")
     if display_mode == "بالتشكيل":
         return t
     if display_mode == "بدون تشكيل":
         return p
     return f"{t}\n{p}"
 
+# =======================
+# واجهة Streamlit
+# =======================
 st.set_page_config(page_title="سياق الجذر", page_icon="🧩", layout="wide")
-st.title("🧩 سياق الجذر (قبل/الآية/بعد)")
+st.title("🧩 سياق الجذر (قبل / الآية / بعد)")
 
-with st.sidebar:
-    st.header("الملفات")
-    csv_path = st.text_input("ملف القرآن CSV", value="quran_corrected_global.csv")
-    xlsx_path = st.text_input("قاموس الكلمات والجذور (Cl1.xlsx)", value="Cl1.xlsx")
-
-# تحميل CSV
-try:
-    quran_df_raw = load_quran_csv(csv_path)
-except Exception as e:
-    st.error(f"فشل تحميل CSV: {e}")
-    st.stop()
-
-csv_cols = list(quran_df_raw.columns)
-
-with st.sidebar:
-    st.subheader("تعيين أعمدة CSV")
-    def default_idx(name, fallback=0):
-        return csv_cols.index(name) if name in csv_cols else fallback
-
-    col_tash = st.selectbox("عمود الآية بالتشكيل", csv_cols, index=default_idx("3", min(3, len(csv_cols)-1)))
-    col_plain = st.selectbox("عمود الآية بدون تشكيل", csv_cols, index=default_idx("4", min(4, len(csv_cols)-1)))
-    col_surah_no = st.selectbox("عمود رقم السورة", csv_cols, index=default_idx("1", min(1, len(csv_cols)-1)))
-    col_ayah_no  = st.selectbox("عمود رقم الآية", csv_cols, index=default_idx("2", min(2, len(csv_cols)-1)))
-    col_surah_t  = st.selectbox("عمود اسم السورة (بالتشكيل)", csv_cols, index=default_idx("10", min(10, len(csv_cols)-1)))
-    col_surah_p  = st.selectbox("عمود اسم السورة (بدون تشكيل)", csv_cols, index=default_idx("11", min(11, len(csv_cols)-1)))
-
-    st.divider()
+# إعدادات العرض (مفيدة للمستخدم)
+c_set1, c_set2, c_set3 = st.columns(3)
+with c_set1:
     display_mode = st.radio("عرض النص", ["بالتشكيل", "بدون تشكيل", "كلاهما"], index=2)
+with c_set2:
+    prev_n = st.number_input("عدد الآيات السابقة", min_value=0, max_value=50, value=3)
+with c_set3:
+    next_n = st.number_input("عدد الآيات اللاحقة", min_value=0, max_value=50, value=3)
 
-    st.subheader("السياق")
-    prev_n = st.number_input("عدد الآيات السابقة", min_value=0, max_value=50, value=3, step=1)
-    next_n = st.number_input("عدد الآيات اللاحقة", min_value=0, max_value=50, value=3, step=1)
-
-# تحميل XLSX
+# تحميل الملفات (بدون تدخل المستخدم)
 try:
-    lex_df_raw = load_lexicon_xlsx(xlsx_path)
+    quran_df_raw = load_quran_csv(CSV_PATH)
+    lex_df_raw = load_xlsx(CL1_PATH)
 except Exception as e:
-    st.error(f"فشل تحميل Cl1.xlsx: {e}")
+    st.error(f"فشل تحميل البيانات الأساسية:\n{e}")
     st.stop()
 
-xlsx_cols = list(lex_df_raw.columns)
+# فحص الأعمدة الحرجة
+required_cols = [COL_TASH, COL_PLAIN, COL_SURAH_NO, COL_AYAH_NO, COL_SURAH_T, COL_SURAH_P]
+if not all(c in quran_df_raw.columns for c in required_cols):
+    st.error("ملف CSV لا يطابق البنية المتوقعة. راجع الثوابت أعلى الملف.")
+    st.stop()
 
-with st.sidebar:
-    st.subheader("تعيين أعمدة Cl1.xlsx")
-    word_col = st.selectbox("عمود الكلمة", xlsx_cols, index=(xlsx_cols.index("الكلمة") if "الكلمة" in xlsx_cols else 0))
-    root_col = st.selectbox("عمود الجذر", xlsx_cols, index=(xlsx_cols.index("الجذر") if "الجذر" in xlsx_cols else min(1, len(xlsx_cols)-1)))
-
-# بناء القواميس + الفهرسة
-exact_map, norm_map = build_root_maps(lex_df_raw, word_col, root_col)
+# بناء القواميس + فهرسة الجذور
+exact_map, norm_map = build_root_maps(lex_df_raw)
 
 quran_df = quran_df_raw.copy()
-quran_df["_roots_set"] = index_ayah_roots(quran_df, col_tash, col_plain, exact_map, norm_map)
+quran_df["_roots_set"] = index_ayah_roots(quran_df, exact_map, norm_map)
 
-# بحث
-c1, c2 = st.columns([2.5, 1])
+# =======================
+# البحث
+# =======================
+c1, c2 = st.columns([3, 1])
 with c1:
-    root_query = st.text_input("أدخل الجذر", placeholder="مثال: رحم")
+    root_query = st.text_input("أدخل الجذر", placeholder="مثال: خرر")
 with c2:
     run = st.button("🔎 بحث", type="primary", use_container_width=True)
 
@@ -184,15 +174,14 @@ if run or root_query.strip():
 
     rq_norm = normalize_arabic(rq)
 
-    def has_root(rootset):
-        return rq_norm in {normalize_arabic(x) for x in (rootset or set())}
+    def has_root(rs):
+        return rq_norm in {normalize_arabic(x) for x in rs}
 
     hits = quran_df[quran_df["_roots_set"].apply(has_root)].copy()
 
-    # ترتيب
-    hits["_s"] = hits[col_surah_no].map(safe_int)
-    hits["_a"] = hits[col_ayah_no].map(safe_int)
-    hits = hits.sort_values(["_s", "_a"]).drop(columns=["_s", "_a"], errors="ignore").reset_index(drop=True)
+    hits["_s"] = hits[COL_SURAH_NO].map(safe_int)
+    hits["_a"] = hits[COL_AYAH_NO].map(safe_int)
+    hits = hits.sort_values(["_s", "_a"]).reset_index(drop=True)
 
     total = len(hits)
     st.subheader("النتائج")
@@ -201,96 +190,77 @@ if run or root_query.strip():
     if total == 0:
         st.stop()
 
-    # عمل “سياق” لكل نتيجة
+    # ترتيب المصحف الكامل للسياق
+    q_all = quran_df.copy()
+    q_all["_s"] = q_all[COL_SURAH_NO].map(safe_int)
+    q_all["_a"] = q_all[COL_AYAH_NO].map(safe_int)
+    q_all = q_all.sort_values(["_s", "_a"]).reset_index(drop=True)
+
+    index_map = {
+        (str(r[COL_SURAH_NO]), str(r[COL_AYAH_NO])): i
+        for i, r in q_all.iterrows()
+    }
+
     ctx_rows = []
-    q_all = quran_df.reset_index(drop=True)
-
-    # حتى يكون السياق صحيح لازم نضمن أن ترتيب CSV نفسه حسب (سورة/آية)
-    q_all["_s"] = q_all[col_surah_no].map(safe_int)
-    q_all["_a"] = q_all[col_ayah_no].map(safe_int)
-    q_all = q_all.sort_values(["_s", "_a"]).drop(columns=["_s", "_a"], errors="ignore").reset_index(drop=True)
-
-    # خريطة من (سورة, آية) -> index داخل q_all
-    key_to_idx = {}
-    for i, r in q_all.iterrows():
-        key_to_idx[(str(r.get(col_surah_no, "")), str(r.get(col_ayah_no, "")))] = i
 
     for _, hit in hits.iterrows():
-        s_no = str(hit.get(col_surah_no, ""))
-        a_no = str(hit.get(col_ayah_no, ""))
-        idx = key_to_idx.get((s_no, a_no))
+        key = (str(hit[COL_SURAH_NO]), str(hit[COL_AYAH_NO]))
+        idx = index_map.get(key)
         if idx is None:
             continue
 
-        start = max(0, idx - int(prev_n))
-        end   = min(len(q_all) - 1, idx + int(next_n))
+        start = max(0, idx - prev_n)
+        end = min(len(q_all) - 1, idx + next_n)
 
-        # عنوان السورة
-        sur_title = format_surah_title(display_mode, hit.get(col_surah_t, ""), hit.get(col_surah_p, ""))
+        sur_title = format_surah_title(
+            display_mode,
+            hit[COL_SURAH_T],
+            hit[COL_SURAH_P]
+        )
 
-        # تجميع نصوص قبل/بعد
-        before = []
-        after  = []
+        before, after = [], []
 
         for j in range(start, idx):
             r = q_all.iloc[j]
-            before.append({
-                "surah_no": r.get(col_surah_no, ""),
-                "ayah_no": r.get(col_ayah_no, ""),
-                "text": pick_text(display_mode, r.get(col_tash, ""), r.get(col_plain, ""))
-            })
+            before.append(f"({r[COL_SURAH_NO]}:{r[COL_AYAH_NO]}) {pick_text(display_mode, r[COL_TASH], r[COL_PLAIN])}")
 
-        center_text = pick_text(display_mode, hit.get(col_tash, ""), hit.get(col_plain, ""))
+        center = pick_text(display_mode, hit[COL_TASH], hit[COL_PLAIN])
 
         for j in range(idx + 1, end + 1):
             r = q_all.iloc[j]
-            after.append({
-                "surah_no": r.get(col_surah_no, ""),
-                "ayah_no": r.get(col_ayah_no, ""),
-                "text": pick_text(display_mode, r.get(col_tash, ""), r.get(col_plain, ""))
-            })
+            after.append(f"({r[COL_SURAH_NO]}:{r[COL_AYAH_NO]}) {pick_text(display_mode, r[COL_TASH], r[COL_PLAIN])}")
 
-        # عرض بصري واضح
-        st.markdown(f"### [{s_no}:{a_no}] {sur_title}")
-
-        if before:
-            st.markdown("**قبل:**")
-            for b in before:
-                st.markdown(f"- ({b['surah_no']}:{b['ayah_no']}) {b['text']}")
-        else:
-            st.markdown("**قبل:** لا يوجد")
+        st.markdown(f"### [{hit[COL_SURAH_NO]}:{hit[COL_AYAH_NO]}] {sur_title}")
+        st.markdown("**قبل:**" if before else "**قبل:** لا يوجد")
+        for b in before:
+            st.markdown(f"- {b}")
 
         st.markdown("**الآية المطابقة:**")
-        st.markdown(f"- **({s_no}:{a_no})** {center_text}")
+        st.markdown(f"- **{center}**")
 
-        if after:
-            st.markdown("**بعد:**")
-            for a in after:
-                st.markdown(f"- ({a['surah_no']}:{a['ayah_no']}) {a['text']}")
-        else:
-            st.markdown("**بعد:** لا يوجد")
+        st.markdown("**بعد:**" if after else "**بعد:** لا يوجد")
+        for a in after:
+            st.markdown(f"- {a}")
 
         st.divider()
 
-        # صف للتصدير
         ctx_rows.append({
             "root": rq_norm,
-            "surah_no": s_no,
-            "ayah_no": a_no,
+            "surah_no": hit[COL_SURAH_NO],
+            "ayah_no": hit[COL_AYAH_NO],
             "surah": sur_title,
-            "prev_n": int(prev_n),
-            "next_n": int(next_n),
-            "before": " | ".join([f"({x['surah_no']}:{x['ayah_no']}) {x['text']}" for x in before]),
-            "center": f"({s_no}:{a_no}) {center_text}",
-            "after":  " | ".join([f"({x['surah_no']}:{x['ayah_no']}) {x['text']}" for x in after]),
+            "prev_n": prev_n,
+            "next_n": next_n,
+            "before": " | ".join(before),
+            "center": center,
+            "after": " | ".join(after),
         })
 
-    # تنزيل النتائج
     if ctx_rows:
         export_df = pd.DataFrame(ctx_rows)
         st.download_button(
             "⬇️ تنزيل نتائج السياق CSV",
             data=export_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"context_root_{rq_norm}_p{int(prev_n)}_n{int(next_n)}.csv",
+            file_name=f"context_root_{rq_norm}_p{prev_n}_n{next_n}.csv",
             mime="text/csv",
         )
